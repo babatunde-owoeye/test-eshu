@@ -1,0 +1,27 @@
+apiVersion: moniepoint.com/v1b1
+
+# Off-the-shelf image: mendhak/http-https-echo
+# Echoes every HTTP request as a JSON object — no custom code required.
+#
+# Test:
+#   curl http://<host>/anything
+#   curl -X POST http://<host>/echo -d '{"hello":"world"}' -H 'Content-Type: application/json'
+
+metadata:
+  name: echo-server
+  annotations:
+    eshu.moniepoint.com/spec-role: base
+    eshu.moniepoint.com/team-name: platform
+
+containers:
+  echo:
+    image: mendhak/http-https-echo:34
+    variables:
+      HTTP_PORT: "8080"
+      HTTPS_PORT: "8443"
+
+service:
+  ports:
+    http:
+      port: 8080
+      targetPort: 8080
