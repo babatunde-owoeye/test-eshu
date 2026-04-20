@@ -1,0 +1,165 @@
+apiVersion: moniepoint.com/v1b1
+
+# Users REST API with nginx reverse proxy
+#
+# Containers:
+#   proxy — nginx:1.25-alpine (off-the-shelf, custom config mounted)
+#   api   — node:20-alpine    (embedded Express users API, not exposed directly)
+#
+# All inbound traffic hits nginx on port 80; nginx forwards to the api on localhost:3000.
+#
+# Endpoints (via proxy on port 80):
+#   GET  /healthz        → { status: "ok", component: "proxy" }
+#   GET  /users          → { data: [...], total: N }
+#   POST /users          → { data: { id, name, email, role } }   body: { name, email, role? }
+#   GET  /users/:id      → { data: { id, name, email, role } }
+#   DEL  /users/:id      → 204
+
+metadata:
+  name: user-api
+  annotations:
+    eshu.moniepoint.com/spec-role: base
+    eshu.moniepoint.com/team-name: identity
+
+containers:
+  proxy:
+    image: nginx:1.25-alpine
+
+    files:
+      /etc/nginx/conf.d/default.conf:
+        mode: "0644"
+        noExpand: true
+        content: |
+          server {
+              listen 80;
+
+              location / {
+                  proxy_pass         http://localhost:3000;
+                  proxy_http_version 1.1;
+                  proxy_set_header   Connection        "";
+                  proxy_set_header   Host              $host;
+                  proxy_set_header   X-Real-IP         $remote_addr;
+                  proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+              }
+
+              location /healthz {
+                  return 200 '{"status":"ok","component":"proxy"}';
+                  add_header Content-Type application/json;
+              }
+          }
+
+    resources:
+      limits:
+        memory: 64Mi
+        cpu: 100m
+      requests:
+        memory: 32Mi
+        cpu: 50m
+
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: 80
+
+    readinessProbe:
+      # TODO we need to allow exec, tcpSocket, grpc type of probes
+      # exec: 
+      #   command:
+      #     - nginx
+      #     - -t
+      httpGet:
+        path: /healthz
+        port: 80
+
+  api:
+    image: node:20-alpine
+
+    command:
+      - sh
+
+    args:
+      - -c
+      - cd /app && npm install --quiet && node server.js
+
+    variables:
+      PORT: "3000"
+      NODE_ENV: production
+
+    files:
+      /app/package.json:
+        mode: "0644"
+        noExpand: true
+        content: |
+          {
+            "name": "user-api",
+            "version": "1.0.0",
+            "dependencies": { "express": "^4.18.0" }
+          }
+
+      /app/server.js:
+        mode: "0644"
+        noExpand: true
+        content: |
+          'use strict';
+          const express = require('express');
+          const app = express();
+          const PORT = +(process.env.PORT || 3000);
+
+          app.use(express.json());
+
+          let nextId = 3;
+          const users = [
+            { id: 1, name: 'Alice Okafor',   email: 'alice@example.com', role: 'admin' },
+            { id: 2, name: 'Bob Adeyemi',     email: 'bob@example.com',   role: 'user'  },
+          ];
+
+          app.get('/healthz', (_req, res) => res.json({ status: 'ok' }));
+          app.get('/ready',   (_req, res) => res.json({ status: 'ready' }));
+
+          app.get('/users', (_req, res) => res.json({ data: users, total: users.length }));
+
+          app.get('/users/:id', (req, res) => {
+            const user = users.find(u => u.id === +req.params.id);
+            return user ? res.json({ data: user }) : res.status(404).json({ error: 'not found' });
+          });
+
+          app.post('/users', (req, res) => {
+            const { name, email, role = 'user' } = req.body || {};
+            if (!name || !email) return res.status(400).json({ error: 'name and email are required' });
+            const user = { id: nextId++, name, email, role };
+            users.push(user);
+            res.status(201).json({ data: user });
+          });
+
+          app.delete('/users/:id', (req, res) => {
+            const idx = users.findIndex(u => u.id === +req.params.id);
+            if (idx === -1) return res.status(404).json({ error: 'not found' });
+            users.splice(idx, 1);
+            res.status(204).end();
+          });
+
+          app.listen(PORT, () => console.log('Users API on :' + PORT));
+
+    resources:
+      limits:
+        memory: 256Mi
+        cpu: 500m
+      requests:
+        memory: 128Mi
+        cpu: 250m
+
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: 3000
+
+    readinessProbe:
+      httpGet:
+        path: /ready
+        port: 3000
+
+service:
+  ports:
+    http:
+      port: 80
+      targetPort: 80
